@@ -116,6 +116,7 @@ if mis_file and cdr_file:
             }, inplace=True)
 
         st.success(f"✅ Report Ready for Provider: {selected_provider}")
+        st.info("No data is stored. Files are processed temporarily and discarded after session ends.")
 
         st.write("Preview (Top 50 rows)")
         st.dataframe(final.head(50))
@@ -128,4 +129,5 @@ if mis_file and cdr_file:
             csv,
             f"{selected_provider}_Consolidated_Report.csv",
             "text/csv"
+
         )
