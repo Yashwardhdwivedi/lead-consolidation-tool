@@ -3,12 +3,13 @@ import pandas as pd
 
 st.set_page_config(page_title="Lead Consolidation Tool", layout="wide")
 
-st.title("📊 MIS + Acefone Consolidation Tool")
-st.markdown("Upload files → Select Provider(s) → Click Analyze → Download Report")
+st.title("📊 MIS + Multi-CDR Consolidation Tool")
+st.markdown("Upload MIS → Upload Multiple CDR Files → Select Provider(s) → Analyze")
+
 st.info("🔒 Files are processed temporarily. No data is stored.")
 
 # ==============================
-# Sidebar Upload Section
+# Sidebar Upload
 # ==============================
 
 with st.sidebar:
@@ -19,9 +20,10 @@ with st.sidebar:
         type=["xlsx", "csv"]
     )
 
-    cdr_file = st.file_uploader(
-        "Upload CDR File (xlsx/csv)",
-        type=["xlsx", "csv"]
+    cdr_files = st.file_uploader(
+        "Upload One or More CDR Files",
+        type=["xlsx", "csv"],
+        accept_multiple_files=True
     )
 
 # ==============================
@@ -37,150 +39,151 @@ def read_file(file):
 def clean_phone(series):
     return (
         series.astype(str)
-        .str.replace(r"\.0$", "", regex=True)   # remove .0
-        .str.replace(r"\D", "", regex=True)     # remove non-digits
-        .str[-10:]                              # keep last 10 digits
+        .str.replace(r"\.0$", "", regex=True)
+        .str.replace(r"\D", "", regex=True)
+        .str[-10:]
     )
 
 # ==============================
-# Main Processing
+# Main Logic
 # ==============================
 
-if mis_file and cdr_file:
+if mis_file and cdr_files:
 
-    try:
-        mis = read_file(mis_file)
+    mis = read_file(mis_file)
 
-        required_mis_cols = [
-            "CorporateName","RequestDate","ContractName","PatientName",
-            "ApplicationId","PolicyNo","Gender","RelationShip","EmailId",
-            "ContactNo","NoOfReschedule","ProviderName","ProviderState"
-        ]
+    required_mis_cols = [
+        "CorporateName","RequestDate","ContractName","PatientName",
+        "ApplicationId","PolicyNo","Gender","RelationShip","EmailId",
+        "ContactNo","NoOfReschedule","ProviderName","ProviderState"
+    ]
 
-        for col in required_mis_cols:
-            if col not in mis.columns:
-                st.error(f"Missing MIS column: {col}")
-                st.stop()
+    for col in required_mis_cols:
+        if col not in mis.columns:
+            st.error(f"Missing MIS column: {col}")
+            st.stop()
 
-        provider_list = sorted(mis["ProviderName"].dropna().unique())
+    provider_list = sorted(mis["ProviderName"].dropna().unique())
 
-        # ✅ Select All Option
-        select_all = st.checkbox("Select All Providers")
+    select_all = st.checkbox("Select All Providers")
 
-        if select_all:
-            selected_providers = provider_list
-        else:
-            selected_providers = st.multiselect(
-                "Select ProviderName(s)",
-                provider_list
-            )
+    if select_all:
+        selected_providers = provider_list
+    else:
+        selected_providers = st.multiselect(
+            "Select ProviderName(s)",
+            provider_list
+        )
 
-        analyze = st.button("🔍 Analyze")
+    analyze = st.button("🔍 Analyze")
 
-        if analyze:
+    if analyze:
 
-            if not selected_providers:
-                st.warning("Please select at least one ProviderName.")
-                st.stop()
+        if not selected_providers:
+            st.warning("Please select at least one ProviderName.")
+            st.stop()
 
-            with st.spinner("Processing data..."):
-
-                mis_filtered = mis[
-                    mis["ProviderName"].isin(selected_providers)
-                ].copy()
-
-                mis_filtered["phone"] = clean_phone(mis_filtered["ContactNo"])
-
-                # ==============================
-                # Load CDR
-                # ==============================
-
-                cdr = read_file(cdr_file)
-
-                required_cdr_cols = [
-                    "Customer Number",
-                    "Call Type",
-                    "DID Number",
-                    "Connected to Agent",
-                    "Call Status",
-                    "Disposition Code",
-                    "Disposition Name",
-                    "Total Call Duration (HH:MM:SS)",
-                    "Call Start Date",
-                    "Call Start Time"
-                ]
-
-                for col in required_cdr_cols:
-                    if col not in cdr.columns:
-                        st.error(f"Missing CDR column: {col}")
-                        st.stop()
-
-                cdr = cdr[required_cdr_cols].copy()
-
-                cdr["phone"] = clean_phone(cdr["Customer Number"])
-
-                cdr["call_datetime"] = pd.to_datetime(
-                    cdr["Call Start Date"].astype(str) + " " +
-                    cdr["Call Start Time"].astype(str),
-                    errors="coerce"
-                )
-
-                cdr = cdr.dropna(subset=["phone", "call_datetime"])
-
-                # ==============================
-                # Get Last Call Per Phone
-                # ==============================
-
-                cdr_sorted = cdr.sort_values("call_datetime", ascending=False)
-                last_call = cdr_sorted.drop_duplicates("phone")
-
-                # ==============================
-                # Merge
-                # ==============================
-
-                final = mis_filtered.merge(last_call, on="phone", how="left")
-
-                # ==============================
-                # Select Output Columns
-                # ==============================
-
-                output_columns = required_mis_cols + [
-                    "Call Type",
-                    "DID Number",
-                    "Connected to Agent",
-                    "Call Status",
-                    "Disposition Code",
-                    "Disposition Name",
-                    "Total Call Duration (HH:MM:SS)"
-                ]
-
-                final_output = final[output_columns]
+        with st.spinner("Processing data..."):
 
             # ==============================
-            # Metrics Section
+            # Filter MIS
             # ==============================
 
-            col1, col2, col3 = st.columns(3)
+            mis_filtered = mis[
+                mis["ProviderName"].isin(selected_providers)
+            ].copy()
 
-            col1.metric("Total Leads", len(final_output))
-            col2.metric("Providers Selected", len(selected_providers))
-            col3.metric(
-                "Matched Calls",
-                final_output["Call Status"].notna().sum()
+            mis_filtered["phone"] = clean_phone(mis_filtered["ContactNo"])
+
+            # ==============================
+            # Combine Multiple CDR Files
+            # ==============================
+
+            cdr_list = []
+
+            for file in cdr_files:
+                temp = read_file(file)
+                cdr_list.append(temp)
+
+            cdr = pd.concat(cdr_list, ignore_index=True)
+
+            required_cdr_cols = [
+                "Customer Number",
+                "Call Type",
+                "DID Number",
+                "Connected to Agent",
+                "Call Status",
+                "Disposition Code",
+                "Disposition Name",
+                "Total Call Duration (HH:MM:SS)",
+                "Call Start Date",
+                "Call Start Time"
+            ]
+
+            for col in required_cdr_cols:
+                if col not in cdr.columns:
+                    st.error(f"Missing CDR column: {col}")
+                    st.stop()
+
+            cdr = cdr[required_cdr_cols].copy()
+
+            cdr["phone"] = clean_phone(cdr["Customer Number"])
+
+            cdr["call_datetime"] = pd.to_datetime(
+                cdr["Call Start Date"].astype(str) + " " +
+                cdr["Call Start Time"].astype(str),
+                errors="coerce"
             )
 
-            st.success("✅ Analysis Complete")
+            cdr = cdr.dropna(subset=["phone", "call_datetime"])
 
-            st.dataframe(final_output, use_container_width=True)
+            # ==============================
+            # Get TRUE Last Call Across ALL Files
+            # ==============================
 
-            csv = final_output.to_csv(index=False).encode("utf-8")
+            cdr_sorted = cdr.sort_values("call_datetime", ascending=False)
+            last_call = cdr_sorted.drop_duplicates("phone")
 
-            st.download_button(
-                "📥 Download Consolidated Report",
-                csv,
-                "Consolidated_Report.csv",
-                "text/csv"
-            )
+            # ==============================
+            # Merge
+            # ==============================
 
-    except Exception as e:
-        st.error(f"Error: {str(e)}")
+            final = mis_filtered.merge(last_call, on="phone", how="left")
+
+            output_columns = required_mis_cols + [
+                "Call Type",
+                "DID Number",
+                "Connected to Agent",
+                "Call Status",
+                "Disposition Code",
+                "Disposition Name",
+                "Total Call Duration (HH:MM:SS)"
+            ]
+
+            final_output = final[output_columns]
+
+        # ==============================
+        # Metrics
+        # ==============================
+
+        col1, col2, col3 = st.columns(3)
+
+        col1.metric("Total Leads", len(final_output))
+        col2.metric("Providers Selected", len(selected_providers))
+        col3.metric(
+            "Matched Calls",
+            final_output["Call Status"].notna().sum()
+        )
+
+        st.success("✅ Analysis Complete")
+
+        st.dataframe(final_output, use_container_width=True)
+
+        csv = final_output.to_csv(index=False).encode("utf-8")
+
+        st.download_button(
+            "📥 Download Consolidated Report",
+            csv,
+            "Consolidated_Report.csv",
+            "text/csv"
+        )
