@@ -1,4 +1,4 @@
-import streamlit as st
+  import streamlit as st
 import pandas as pd
 
 st.set_page_config(page_title="Lead Consolidation Tool", layout="wide")
@@ -100,7 +100,6 @@ if mis_file and cdr_files:
             # ==============================
 
             cdr_list = []
-
             for file in cdr_files:
                 temp = read_file(file)
                 cdr_list.append(temp)
@@ -138,19 +137,33 @@ if mis_file and cdr_files:
             cdr = cdr.dropna(subset=["phone", "call_datetime"])
 
             # ==============================
-            # Get TRUE Last Call Across ALL Files
+            # Calculate Total Attempts
+            # ==============================
+
+            attempt_count = (
+                cdr.groupby("phone")
+                .size()
+                .reset_index(name="Total_Call_Attempts")
+            )
+
+            # ==============================
+            # Get True Last Call
             # ==============================
 
             cdr_sorted = cdr.sort_values("call_datetime", ascending=False)
             last_call = cdr_sorted.drop_duplicates("phone")
 
             # ==============================
-            # Merge
+            # Merge Everything
             # ==============================
 
-            final = mis_filtered.merge(last_call, on="phone", how="left")
+            final = mis_filtered.merge(attempt_count, on="phone", how="left")
+            final = final.merge(last_call, on="phone", how="left")
+
+            final["Total_Call_Attempts"] = final["Total_Call_Attempts"].fillna(0)
 
             output_columns = required_mis_cols + [
+                "Total_Call_Attempts",
                 "Call Type",
                 "DID Number",
                 "Connected to Agent",
@@ -170,10 +183,7 @@ if mis_file and cdr_files:
 
         col1.metric("Total Leads", len(final_output))
         col2.metric("Providers Selected", len(selected_providers))
-        col3.metric(
-            "Matched Calls",
-            final_output["Call Status"].notna().sum()
-        )
+        col3.metric("Total Calls Logged", final_output["Total_Call_Attempts"].sum())
 
         st.success("✅ Analysis Complete")
 
