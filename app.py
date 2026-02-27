@@ -1,40 +1,39 @@
 import streamlit as st
 import pandas as pd
+import json
+import os
 
-st.set_page_config(page_title="Lead Consolidation Tool", layout="wide")
+st.set_page_config(page_title="Advanced MIS + CDR Analytics Tool", layout="wide")
 
-st.title("📊 MIS + Multi-CDR Consolidation Tool")
-st.markdown("Upload MIS → Upload Multiple CDR Files → Select Provider(s) → Analyze")
+st.title("📊 Advanced MIS + Multi-CDR Analytics Tool")
+st.markdown("Upload MIS → Upload Multiple CDR Files → Use Presets or Manual Filter → Analyze")
 
-st.info("🔒 Files are processed temporarily. No data is stored.")
+st.info("🔒 Files are processed temporarily. Presets are saved locally. No lead data is stored.")
 
-# ==============================
-# Sidebar Upload
-# ==============================
+# =====================================================
+# Preset System (Max 2 Presets)
+# =====================================================
 
-with st.sidebar:
-    st.header("Upload Files")
+PRESET_FILE = "presets.json"
 
-    mis_file = st.file_uploader(
-        "Upload MIS File (xlsx/csv)",
-        type=["xlsx", "csv"]
-    )
+def load_presets():
+    if os.path.exists(PRESET_FILE):
+        with open(PRESET_FILE, "r") as f:
+            return json.load(f)
+    return {}
 
-    cdr_files = st.file_uploader(
-        "Upload One or More CDR Files",
-        type=["xlsx", "csv"],
-        accept_multiple_files=True
-    )
+def save_presets(presets):
+    with open(PRESET_FILE, "w") as f:
+        json.dump(presets, f)
 
-# ==============================
+# =====================================================
 # Utility Functions
-# ==============================
+# =====================================================
 
 def read_file(file):
     if file.name.endswith(".csv"):
         return pd.read_csv(file)
-    else:
-        return pd.read_excel(file)
+    return pd.read_excel(file)
 
 def clean_phone(series):
     return (
@@ -44,9 +43,19 @@ def clean_phone(series):
         .str[-10:]
     )
 
-# ==============================
+# =====================================================
+# Sidebar Upload
+# =====================================================
+
+with st.sidebar:
+    st.header("Upload Files")
+
+    mis_file = st.file_uploader("Upload MIS File (xlsx/csv)", type=["xlsx", "csv"])
+    cdr_files = st.file_uploader("Upload CDR Files", type=["xlsx", "csv"], accept_multiple_files=True)
+
+# =====================================================
 # Main Logic
-# ==============================
+# =====================================================
 
 if mis_file and cdr_files:
 
@@ -65,56 +74,76 @@ if mis_file and cdr_files:
 
     provider_list = sorted(mis["ProviderName"].dropna().unique())
 
-    select_all = st.checkbox("Select All Providers")
+    presets = load_presets()
+    preset_names = list(presets.keys())
 
-    if select_all:
-        selected_providers = provider_list
+    st.subheader("Partner Filter")
+
+    mode = st.radio("Selection Mode", ["Manual", "Preset"])
+
+    if mode == "Preset" and preset_names:
+        selected_preset = st.selectbox("Select Preset", preset_names)
+        selected_providers = presets[selected_preset]
+        st.write("Preset Providers:", selected_providers)
     else:
-        selected_providers = st.multiselect(
-            "Select ProviderName(s)",
-            provider_list
-        )
+        selected_providers = st.multiselect("Select Provider(s)", provider_list)
+
+    # ==============================
+    # Preset Management
+    # ==============================
+
+    st.markdown("### Manage Presets (Max 2)")
+
+    preset_name_input = st.text_input("Preset Name")
+    preset_provider_input = st.multiselect("Preset Providers", provider_list, key="preset_select")
+
+    colA, colB = st.columns(2)
+
+    with colA:
+        if st.button("Save / Update Preset"):
+            if not preset_name_input:
+                st.warning("Enter preset name.")
+            elif len(presets) >= 2 and preset_name_input not in presets:
+                st.warning("Maximum 2 presets allowed.")
+            else:
+                presets[preset_name_input] = preset_provider_input
+                save_presets(presets)
+                st.success("Preset saved.")
+                st.rerun()
+
+    with colB:
+        if st.button("Delete Preset"):
+            if preset_name_input in presets:
+                del presets[preset_name_input]
+                save_presets(presets)
+                st.success("Preset deleted.")
+                st.rerun()
 
     analyze = st.button("🔍 Analyze")
+
+    # =====================================================
+    # ANALYSIS SECTION
+    # =====================================================
 
     if analyze:
 
         if not selected_providers:
-            st.warning("Please select at least one ProviderName.")
+            st.warning("Please select at least one provider.")
             st.stop()
 
-        with st.spinner("Processing data..."):
+        with st.spinner("Processing..."):
 
-            # ==============================
-            # Filter MIS
-            # ==============================
-
-            mis_filtered = mis[
-                mis["ProviderName"].isin(selected_providers)
-            ].copy()
-
+            mis_filtered = mis[mis["ProviderName"].isin(selected_providers)].copy()
             mis_filtered["phone"] = clean_phone(mis_filtered["ContactNo"])
 
-            # ==============================
-            # Combine Multiple CDR Files
-            # ==============================
-
-            cdr_list = []
-            for file in cdr_files:
-                temp = read_file(file)
-                cdr_list.append(temp)
-
+            # Combine all CDR files
+            cdr_list = [read_file(f) for f in cdr_files]
             cdr = pd.concat(cdr_list, ignore_index=True)
 
             required_cdr_cols = [
                 "Customer Number",
-                "Call Type",
-                "DID Number",
-                "Connected to Agent",
                 "Call Status",
-                "Disposition Code",
                 "Disposition Name",
-                "Total Call Duration (HH:MM:SS)",
                 "Call Start Date",
                 "Call Start Time"
             ]
@@ -125,7 +154,6 @@ if mis_file and cdr_files:
                     st.stop()
 
             cdr = cdr[required_cdr_cols].copy()
-
             cdr["phone"] = clean_phone(cdr["Customer Number"])
 
             cdr["call_datetime"] = pd.to_datetime(
@@ -136,64 +164,81 @@ if mis_file and cdr_files:
 
             cdr = cdr.dropna(subset=["phone", "call_datetime"])
 
-            # ==============================
-            # Calculate Total Attempts
-            # ==============================
+            # =============================
+            # Analytics Calculations
+            # =============================
 
-            attempt_count = (
-                cdr.groupby("phone")
+            attempt_count = cdr.groupby("phone").size().reset_index(name="Total_Attempts")
+
+            connected = (
+                cdr[cdr["Call Status"] == "Answered"]
+                .groupby("phone")
                 .size()
-                .reset_index(name="Total_Call_Attempts")
+                .reset_index(name="Connected_Attempts")
             )
 
-            # ==============================
-            # Get True Last Call
-            # ==============================
+            first_call = cdr.groupby("phone")["call_datetime"].min().reset_index(name="First_Call_Date")
+            last_call_date = cdr.groupby("phone")["call_datetime"].max().reset_index(name="Last_Call_Date")
 
             cdr_sorted = cdr.sort_values("call_datetime", ascending=False)
-            last_call = cdr_sorted.drop_duplicates("phone")
+            last_disposition = cdr_sorted.drop_duplicates("phone")[["phone","Disposition Name","Call Status"]]
 
-            # ==============================
-            # Merge Everything
-            # ==============================
-
+            # Merge everything
             final = mis_filtered.merge(attempt_count, on="phone", how="left")
-            final = final.merge(last_call, on="phone", how="left")
+            final = final.merge(connected, on="phone", how="left")
+            final = final.merge(first_call, on="phone", how="left")
+            final = final.merge(last_call_date, on="phone", how="left")
+            final = final.merge(last_disposition, on="phone", how="left")
 
-            final["Total_Call_Attempts"] = final["Total_Call_Attempts"].fillna(0)
+            final.fillna({
+                "Total_Attempts":0,
+                "Connected_Attempts":0
+            }, inplace=True)
 
-            output_columns = required_mis_cols + [
-                "Total_Call_Attempts",
-                "Call Type",
-                "DID Number",
-                "Connected to Agent",
-                "Call Status",
-                "Disposition Code",
-                "Disposition Name",
-                "Total Call Duration (HH:MM:SS)"
-            ]
+            final["NotConnected_Attempts"] = final["Total_Attempts"] - final["Connected_Attempts"]
 
-            final_output = final[output_columns]
+        # =============================
+        # Dashboard Metrics
+        # =============================
 
-        # ==============================
-        # Metrics
-        # ==============================
+        st.subheader("📈 Key Insights")
 
-        col1, col2, col3 = st.columns(3)
+        col1, col2, col3, col4 = st.columns(4)
 
-        col1.metric("Total Leads", len(final_output))
-        col2.metric("Providers Selected", len(selected_providers))
-        col3.metric("Total Calls Logged", final_output["Total_Call_Attempts"].sum())
+        col1.metric("Total Leads", len(final))
+        col2.metric("Total Calls", int(final["Total_Attempts"].sum()))
+        col3.metric("Connected Calls", int(final["Connected_Attempts"].sum()))
+        col4.metric("Connection Rate",
+                    f"{(final['Connected_Attempts'].sum() / final['Total_Attempts'].sum() * 100):.1f}%"
+                    if final["Total_Attempts"].sum() > 0 else "0%")
 
-        st.success("✅ Analysis Complete")
+        # =============================
+        # Disposition Breakdown
+        # =============================
 
-        st.dataframe(final_output, use_container_width=True)
+        st.subheader("📊 Disposition Breakdown")
 
-        csv = final_output.to_csv(index=False).encode("utf-8")
+        dispo_summary = final["Disposition Name"].value_counts().reset_index()
+        dispo_summary.columns = ["Disposition", "Count"]
+
+        st.dataframe(dispo_summary, use_container_width=True)
+
+        # =============================
+        # Detailed Table
+        # =============================
+
+        st.subheader("📋 Detailed Lead Report")
+        st.dataframe(final, use_container_width=True)
+
+        # =============================
+        # Download
+        # =============================
+
+        csv = final.to_csv(index=False).encode("utf-8")
 
         st.download_button(
-            "📥 Download Consolidated Report",
+            "📥 Download Full Analytical Report",
             csv,
-            "Consolidated_Report.csv",
+            "Analytical_Report.csv",
             "text/csv"
         )
